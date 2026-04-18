@@ -1,0 +1,785 @@
+<?xml version="1.0"?>
+<!DOCTYPE profile>
+<profile xmlns="http://www.suse.com/1.0/yast2ns" xmlns:config="http://www.suse.com/1.0/configns">
+
+  <!--
+    ============================================================
+    PROFILO AUTOYAST — PANDORA NUC
+    openSUSE Leap 15.6 — Server headless minimale
+    Autore: tommy@mucchina-lab
+    Versione: 1.0 — Aprile 2026
+    ============================================================
+
+    UTILIZZO:
+      Passare questo file all'installer con il parametro kernel:
+      autoyast=http://192.168.1.1/autoinst.xml
+      oppure da USB:
+      autoyast=usb:///autoinst.xml
+
+    CARATTERISTICHE:
+      - Installazione completamente automatica (confirm=false)
+      - Rete DHCP su prima interfaccia disponibile
+      - Firewall: nftables statico (firewalld disabilitato)
+      - SSH: solo autenticazione a chiave ed25519
+      - btrfs con subvolumi standard openSUSE + snapper
+      - Utente tommy con chiave SSH preinstallata
+    ============================================================
+  -->
+
+  <!-- ============================================================
+    REPOSITORY AGGIUNTIVI
+    Commentati per installazione offline.
+    Post-installazione: decommentare e lanciare: zypper ref && zypper up
+    ============================================================ -->
+  <!--
+  <add-on t="map">
+    <add_on_others t="list">
+      <listentry t="map">
+        <alias>repo-oss</alias>
+        <media_url>http://download.opensuse.org/distribution/leap/15.6/repo/oss/</media_url>
+        <name>Main Repository (OSS)</name>
+        <priority t="integer">99</priority>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <alias>repo-backports-update</alias>
+        <media_url>http://download.opensuse.org/update/leap/15.6/backports/</media_url>
+        <name>Update repository of openSUSE Backports</name>
+        <priority t="integer">99</priority>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <alias>repo-non-oss</alias>
+        <media_url>http://download.opensuse.org/distribution/leap/15.6/repo/non-oss/</media_url>
+        <name>Non-OSS Repository</name>
+        <priority t="integer">99</priority>
+        <product_dir/>
+      </listentry>
+      <listentry t="map">
+        <alias>repo-sle-update</alias>
+        <media_url>http://download.opensuse.org/update/leap/15.6/sle/</media_url>
+        <name>Update repository with updates from SUSE Linux Enterprise 15</name>
+        <priority t="integer">99</priority>
+        <product_dir>/</product_dir>
+      </listentry>
+      <listentry t="map">
+        <alias>repo-update-non-oss</alias>
+        <media_url>http://download.opensuse.org/update/leap/15.6/non-oss/</media_url>
+        <name>Update Repository (Non-Oss)</name>
+        <priority t="integer">99</priority>
+        <product_dir/>
+      </listentry>
+    </add_on_others>
+  </add-on>
+  -->
+
+  <!-- ============================================================
+    BOOTLOADER
+    GRUB2 con doppia console: display fisico + seriale
+    console=tty0        → output su display fisico (monitor/ILO KVM)
+    console=ttyS0       → output su porta seriale (ILO serial / debug)
+    Timeout ridotto a 3s per boot rapido su server automatico
+    ============================================================ -->
+  <bootloader t="map">
+    <global t="map">
+      <append>console=tty0 console=ttyS0,115200n8 preempt=full mitigations=auto quiet security=apparmor</append>
+      <cpu_mitigations>auto</cpu_mitigations>
+      <gfxmode>auto</gfxmode>
+      <hiddenmenu>false</hiddenmenu>
+      <os_prober>false</os_prober>
+      <secure_boot>true</secure_boot>
+      <serial>serial --unit=0 --speed=115200 --parity=no --word=8</serial>
+      <terminal>gfxterm serial</terminal>
+      <timeout t="integer">3</timeout>
+      <trusted_grub>false</trusted_grub>
+      <update_nvram>true</update_nvram>
+    </global>
+    <loader_type>grub2</loader_type>
+  </bootloader>
+
+  <!-- ============================================================
+    FIREWALL
+    firewalld disabilitato — sostituito da nftables statico
+    La configurazione nftables viene installata dalla sezione <scripts>
+    ============================================================ -->
+  <firewall t="map">
+    <enable_firewall t="boolean">false</enable_firewall>
+    <start_firewall t="boolean">false</start_firewall>
+  </firewall>
+
+  <!-- ============================================================
+    GENERALE
+    confirm=false → installazione completamente automatica
+    Senza questa opzione AutoYaST chiede conferma all'utente
+    ============================================================ -->
+  <general t="map">
+    <mode t="map">
+      <confirm t="boolean">false</confirm>
+    </mode>
+  </general>
+
+  <!-- ============================================================
+    GRUPPI
+    Solo i gruppi reali — gli altri vengono creati dai pacchetti
+    ============================================================ -->
+  <groups t="list">
+    <group t="map">
+      <gid>0</gid>
+      <groupname>root</groupname>
+      <userlist/>
+    </group>
+    <group t="map">
+      <gid>100</gid>
+      <groupname>users</groupname>
+      <userlist/>
+    </group>
+    <group t="map">
+      <!-- wheel: gruppo per accesso sudo -->
+      <gid>496</gid>
+      <groupname>wheel</groupname>
+      <userlist/>
+    </group>
+  </groups>
+
+  <!-- ============================================================
+    HOSTS
+    Entries standard + hostname del sistema
+    ============================================================ -->
+  <host t="map">
+    <hosts t="list">
+      <hosts_entry t="map">
+        <host_address>127.0.0.1</host_address>
+        <names t="list">
+          <name>localhost</name>
+        </names>
+      </hosts_entry>
+      <hosts_entry t="map">
+        <host_address>127.0.1.1</host_address>
+        <names t="list">
+          <name>pandora-nuc pandora-nuc.localdomain</name>
+        </names>
+      </hosts_entry>
+      <hosts_entry t="map">
+        <host_address>::1</host_address>
+        <names t="list">
+          <name>localhost ipv6-localhost ipv6-loopback</name>
+        </names>
+      </hosts_entry>
+    </hosts>
+  </host>
+
+  <!-- ============================================================
+    LINGUA
+    ============================================================ -->
+  <language t="map">
+    <language>it_IT</language>
+    <languages>it_IT</languages>
+  </language>
+
+  <!-- ============================================================
+    RETE
+    DHCP sulla prima interfaccia disponibile.
+    net-udev rimosso: l'indirizzo PCI è specifico per ogni hardware,
+    non portabile. Il kernel assegna il nome predittivo automaticamente.
+    IPv6 disabilitato: non utilizzato in questo setup.
+    ============================================================ -->
+  <networking t="map">
+    <dhcp_options t="map">
+      <dhclient_client_id/>
+      <dhclient_hostname_option>AUTO</dhclient_hostname_option>
+    </dhcp_options>
+    <dns t="map">
+      <dhcp_hostname t="boolean">true</dhcp_hostname>
+      <hostname>pandora-nuc</hostname>
+      <resolv_conf_policy>auto</resolv_conf_policy>
+    </dns>
+    <interfaces t="list">
+      <interface t="map">
+        <bootproto>dhcp</bootproto>
+        <name>eth0</name>
+        <startmode>auto</startmode>
+      </interface>
+    </interfaces>
+    <ipv6 t="boolean">false</ipv6>
+    <keep_install_network t="boolean">true</keep_install_network>
+    <managed t="boolean">false</managed>
+    <routing t="map">
+      <ipv4_forward t="boolean">false</ipv4_forward>
+      <ipv6_forward t="boolean">false</ipv6_forward>
+    </routing>
+  </networking>
+
+  <!-- ============================================================
+    NTP
+    Policy auto: usa i server NTP forniti dal DHCP o i default di sistema.
+    Per ambienti enterprise: specificare server NTP interni aziendali.
+    ============================================================ -->
+  <ntp-client t="map">
+    <ntp_policy>auto</ntp_policy>
+    <ntp_servers t="list"/>
+    <ntp_sync>systemd</ntp_sync>
+  </ntp-client>
+
+  <!-- ============================================================
+    PARTIZIONI
+    Layout GPT standard openSUSE su primo disco disponibile:
+      part1: EFI System Partition (8MB)
+      part2: root btrfs con subvolumi standard (tutto lo spazio rimanente)
+      part3: swap (2GB)
+
+    size=max sulla root: usa tutto lo spazio disponibile dopo EFI e swap.
+    Subvolumi con copy_on_write=false su @/var: evita double-write
+    su filesystem con log strutturato (journald, database).
+    ============================================================ -->
+  <partitioning t="list">
+    <drive t="map">
+      <!-- device non specificato: AutoYaST seleziona il primo disco disponibile -->
+      <!-- portabile su qualsiasi hardware senza modifiche al profilo -->
+      <disklabel>gpt</disklabel>
+      <enable_snapshots t="boolean">true</enable_snapshots>
+      <partitions t="list">
+
+        <!-- EFI System Partition -->
+        <partition t="map">
+          <create t="boolean">true</create>
+          <format t="boolean">false</format>
+          <partition_id t="integer">263</partition_id>
+          <partition_nr t="integer">1</partition_nr>
+          <resize t="boolean">false</resize>
+          <size>8388608</size>
+        </partition>
+
+        <!-- Root btrfs con subvolumi standard openSUSE -->
+        <partition t="map">
+          <create t="boolean">true</create>
+          <create_subvolumes t="boolean">true</create_subvolumes>
+          <filesystem t="symbol">btrfs</filesystem>
+          <format t="boolean">true</format>
+          <mount>/</mount>
+          <mountby t="symbol">uuid</mountby>
+          <partition_id t="integer">131</partition_id>
+          <partition_nr t="integer">2</partition_nr>
+          <quotas t="boolean">true</quotas>
+          <resize t="boolean">false</resize>
+          <size>max</size>
+          <subvolumes t="list">
+            <!-- var: CoW disabilitato — journald e database scrivono molto -->
+            <subvolume t="map">
+              <copy_on_write t="boolean">false</copy_on_write>
+              <path>var</path>
+            </subvolume>
+            <subvolume t="map">
+              <copy_on_write t="boolean">true</copy_on_write>
+              <path>usr/local</path>
+            </subvolume>
+            <subvolume t="map">
+              <copy_on_write t="boolean">true</copy_on_write>
+              <path>tmp</path>
+            </subvolume>
+            <subvolume t="map">
+              <copy_on_write t="boolean">true</copy_on_write>
+              <path>srv</path>
+            </subvolume>
+            <subvolume t="map">
+              <copy_on_write t="boolean">true</copy_on_write>
+              <path>root</path>
+            </subvolume>
+            <subvolume t="map">
+              <copy_on_write t="boolean">true</copy_on_write>
+              <path>opt</path>
+            </subvolume>
+            <subvolume t="map">
+              <copy_on_write t="boolean">true</copy_on_write>
+              <path>home</path>
+            </subvolume>
+            <subvolume t="map">
+              <copy_on_write t="boolean">true</copy_on_write>
+              <path>boot/grub2/x86_64-efi</path>
+            </subvolume>
+            <subvolume t="map">
+              <copy_on_write t="boolean">true</copy_on_write>
+              <path>boot/grub2/i386-pc</path>
+            </subvolume>
+          </subvolumes>
+          <subvolumes_prefix>@</subvolumes_prefix>
+        </partition>
+
+        <!-- Swap -->
+        <partition t="map">
+          <create t="boolean">true</create>
+          <filesystem t="symbol">swap</filesystem>
+          <format t="boolean">true</format>
+          <mount>swap</mount>
+          <mountby t="symbol">uuid</mountby>
+          <partition_id t="integer">130</partition_id>
+          <partition_nr t="integer">3</partition_nr>
+          <resize t="boolean">false</resize>
+          <size>2GiB</size>
+        </partition>
+
+      </partitions>
+      <type t="symbol">CT_DISK</type>
+      <use>all</use>
+    </drive>
+  </partitioning>
+
+  <!-- ============================================================
+    PROXY
+    ============================================================ -->
+  <proxy t="map">
+    <enabled t="boolean">false</enabled>
+  </proxy>
+
+  <!-- ============================================================
+    SERVIZI
+    Abilitati esplicitamente solo i servizi necessari.
+    Disabilitati esplicitamente quelli inutili su server headless.
+    Questa sezione è autodocumentante: chi legge il profilo capisce
+    immediatamente l'intenzione senza dover ispezionare il sistema.
+    ============================================================ -->
+  <services-manager t="map">
+    <default_target>multi-user</default_target>
+    <services t="map">
+      <enable t="list">
+        <service>chronyd</service>
+        <service>cron</service>
+        <service>irqbalance</service>
+        <service>issue-generator</service>
+        <service>kbdsettings</service>
+        <service>nftables</service>
+        <service>purge-kernels</service>
+        <service>rsyslog</service>
+        <service>smartd</service>
+        <service>snapper</service>
+        <service>sshd</service>
+        <service>systemd-pstore</service>
+        <service>systemd-remount-fs</service>
+        <service>wicked</service>
+        <service>wickedd-dhcp4</service>
+        <service>wickedd-nanny</service>
+      </enable>
+      <disable t="list">
+        <!-- post-install: non più necessari dopo prima configurazione -->
+        <service>YaST2-Firstboot</service>
+        <service>YaST2-Second-Stage</service>
+        <!-- sicurezza: auditd riabilitare in produzione con regole appropriate -->
+        <service>auditd</service>
+        <!-- inutili su server headless -->
+        <service>cups</service>
+        <service>postfix</service>
+        <!-- rete: zeroconf e DHCPv6 non necessari con IP gestiti centralmente -->
+        <service>wickedd-auto4</service>
+        <service>wickedd-dhcp6</service>
+      </disable>
+    </services>
+  </services-manager>
+
+  <!-- ============================================================
+    SOFTWARE
+    Pattern: gruppi di pacchetti tematici openSUSE/SUSE
+    Pacchetti: aggiunte esplicite oltre ai pattern
+    firewalld escluso — sostituito da nftables
+    ============================================================ -->
+  <software t="map">
+    <install_recommended t="boolean">true</install_recommended>
+    <instsource>dvd:///</instsource>
+    <packages t="list">
+      <!-- sistema base -->
+      <package>btrfsprogs</package>
+      <package>chrony</package>
+      <package>e2fsprogs</package>
+      <package>glibc</package>
+      <package>grub2</package>
+      <package>irqbalance</package>
+      <package>kexec-tools</package>
+      <package>numactl</package>
+      <package>openssh</package>
+      <package>openSUSE-release</package>
+      <package>os-prober</package>
+      <package>snapper</package>
+      <package>wicked</package>
+      <!-- firewall: nftables statico al posto di firewalld -->
+      <package>nftables</package>
+      <!-- strumenti di amministrazione -->
+      <package>autoyast2</package>
+    </packages>
+    <patterns t="list">
+      <pattern>apparmor</pattern>
+      <pattern>base</pattern>
+      <pattern>documentation</pattern>
+      <pattern>enhanced_base</pattern>
+      <pattern>minimal_base</pattern>
+      <pattern>sw_management</pattern>
+      <pattern>yast2_basis</pattern>
+    </patterns>
+    <products t="list">
+      <product>Leap</product>
+    </products>
+  </software>
+
+  <!-- ============================================================
+    SSH IMPORT
+    Non importare configurazioni SSH da altri sistemi.
+    Le chiavi sono già definite nella sezione <users>.
+    ============================================================ -->
+  <ssh_import t="map">
+    <copy_config t="boolean">false</copy_config>
+    <import t="boolean">false</import>
+  </ssh_import>
+
+  <!-- ============================================================
+    UTENTI DEFAULT
+    Valori predefiniti per nuovi utenti creati post-installazione.
+    Equivalente di /etc/default/useradd.
+    umask 022: file 644, directory 755.
+    ============================================================ -->
+  <user_defaults t="map">
+    <expire/>
+    <group>100</group>
+    <home>/home</home>
+    <inactive>-1</inactive>
+    <shell>/bin/bash</shell>
+    <umask>022</umask>
+  </user_defaults>
+
+  <!-- ============================================================
+    UTENTI
+    Solo utenti reali — gli utenti di sistema vengono creati dai pacchetti.
+    La chiave SSH pubblica di tommy è preinstallata: accesso immediato
+    post-installazione senza configurazione manuale.
+    Le password sono SHA-512 ($6$) — sicure nel profilo se il file
+    è servito via canale protetto (HTTPS, rete management separata).
+    ============================================================ -->
+  <users t="list">
+
+    <user t="map">
+      <authorized_keys t="list">
+        <!-- chiave ed25519 del laptop mucchina — accesso immediato post-install -->
+        <authorized_key>ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIASej9URtARDPsHm9Ndiq5oo8UhbgSVSeYik4tfVh/uu tommy@mucchina-lab</authorized_key>
+      </authorized_keys>
+      <encrypted t="boolean">true</encrypted>
+      <fullname>Tommy</fullname>
+      <gid>100</gid>
+      <home>/home/tommy</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max>99999</max>
+        <min>0</min>
+        <warn>7</warn>
+      </password_settings>
+      <shell>/bin/bash</shell>
+      <uid>1000</uid>
+      <user_password>$6$DvjlEA61HhFwka0l$yxYhA5fmhexK8LslH.qUveF9StNXrqUY6t9DBY.b4.ENlMPkFOv/fFBua5ufRhfhU/yYTdxNP68Sa7PIjrVbn/</user_password>
+      <username>tommy</username>
+    </user>
+
+    <user t="map">
+      <authorized_keys t="list"/>
+      <encrypted t="boolean">true</encrypted>
+      <fullname>root</fullname>
+      <gid>0</gid>
+      <home>/root</home>
+      <home_btrfs_subvolume t="boolean">false</home_btrfs_subvolume>
+      <password_settings t="map">
+        <expire/>
+        <flag/>
+        <inact/>
+        <max/>
+        <min/>
+        <warn/>
+      </password_settings>
+      <shell>/bin/bash</shell>
+      <uid>0</uid>
+      <user_password>$6$3Kyouz11UUpmF1/2$7exT2guYj.5C6dysNd28LOVrRrvSWUrV4IPuVf3yzU/hOE0MV1LJKNYEWbq9hmgFvKJEz0eQXsaq9A6C10MEm.</user_password>
+      <username>root</username>
+    </user>
+
+  </users>
+
+  <!-- ============================================================
+    SCRIPTS
+    Eseguiti dal più specifico al più generico:
+      chroot-scripts: dentro il sistema installato, prima del reboot
+      post-scripts:   dopo il reboot, sistema avviato
+
+    Usiamo chroot-scripts per la configurazione di sistema:
+    operano direttamente sul filesystem installato con chroot,
+    quindi i file creati sono già nel posto giusto al primo boot.
+
+    IMPORTANTE: il contenuto degli script va in CDATA per evitare
+    che caratteri speciali XML (<, >, &, ecc.) rompano il parsing.
+    ============================================================ -->
+  <scripts t="map">
+
+    <chroot-scripts t="list">
+
+      <!-- ========================================================
+        SCRIPT 1: nftables — configurazione firewall
+        Installa il file di configurazione nftables identico
+        a quello testato su pandora (Tumbleweed).
+        Il servizio nftables è già abilitato nella sezione services.
+        ======================================================== -->
+      <script t="map">
+        <chrooted t="boolean">true</chrooted>
+        <filename>01-nftables-config.sh</filename>
+        <interpreter>shell</interpreter>
+        <source><![CDATA[
+#!/bin/bash
+# Configurazione nftables — firewall statico minimale
+# Regole: SSH in ingresso, ICMP, DHCP client, forward per bridge VM
+
+cat > /etc/nftables.conf << 'EOF'
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet pandora {
+
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        # loopback sempre accettato
+        iifname "lo" accept
+
+        # connessioni già stabilite
+        ct state established,related accept
+
+        # pacchetti non validi scartati
+        ct state invalid drop
+
+        # ICMP diagnostica
+        meta l4proto icmp accept
+        meta l4proto ipv6-icmp accept
+
+        # SSH
+        tcp dport 22 accept
+
+        # DHCP client (wicked)
+        udp dport 68 accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+
+        # traffico bridge VM — tutto permesso nella LAN
+        iifname "br0" accept
+        oifname "br0" accept
+
+        ct state established,related accept
+        ct state invalid drop
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}
+EOF
+
+echo "nftables.conf installato"
+        ]]></source>
+      </script>
+
+      <!-- ========================================================
+        SCRIPT 2: SSH hardening
+        Installa il drop-in sshd_config che disabilita
+        autenticazione password e applica le restrizioni di sicurezza.
+        KbdInteractiveAuthentication e UsePAM no sono necessari
+        su openSUSE per evitare bypass via PAM.
+        ======================================================== -->
+      <script t="map">
+        <chrooted t="boolean">true</chrooted>
+        <filename>02-ssh-hardening.sh</filename>
+        <interpreter>shell</interpreter>
+        <source><![CDATA[
+#!/bin/bash
+# SSH hardening — solo autenticazione a chiave
+
+mkdir -p /etc/ssh/sshd_config.d
+
+cat > /etc/ssh/sshd_config.d/99-hardening.conf << 'EOF'
+# Hardening SSH — pandora-nuc
+# Solo autenticazione a chiave ed25519
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+X11Forwarding no
+MaxAuthTries 3
+LoginGraceTime 20
+AllowUsers tommy
+EOF
+
+echo "SSH hardening configurato"
+        ]]></source>
+      </script>
+
+      <!-- ========================================================
+        SCRIPT 3: ottimizzazione wicked
+        Riduce i timeout di attesa interfacce da 30s a 10s.
+        Sicuro con interfacce statiche o DHCP su rete locale.
+        ======================================================== -->
+      <script t="map">
+        <chrooted t="boolean">true</chrooted>
+        <filename>03-wicked-tuning.sh</filename>
+        <interpreter>shell</interpreter>
+        <source><![CDATA[
+#!/bin/bash
+# Ottimizzazione wicked — riduce timeout boot
+
+cat >> /etc/sysconfig/network/config << 'EOF'
+
+## Ottimizzazione boot — riduce timeout attesa interfacce (default 30s)
+## Sicuro con interfacce statiche o DHCP su rete locale
+## Modificato da AutoYaST — pandora-nuc setup
+WAIT_FOR_INTERFACES="10"
+WICKED_ABORT_TIMEOUT="10"
+EOF
+
+# disabilita servizi wicked inutili
+systemctl mask wickedd-auto4.service
+systemctl mask wickedd-dhcp6.service
+
+echo "wicked tuning applicato"
+        ]]></source>
+      </script>
+
+      <!-- ========================================================
+        SCRIPT 4: dracut — initrd minimale
+        Rimuove moduli inutili su server headless:
+          plymouth:  splash grafico, inutile senza display interattivo
+          i18n:      internazionalizzazione, inutile in initrd
+          drm:       driver grafico kernel mode, inutile headless
+          suse-xfs:  supporto XFS, non usato (filesystem root: btrfs)
+        Compressione zstd: migliore rapporto velocità/dimensione.
+        ======================================================== -->
+      <script t="map">
+        <chrooted t="boolean">true</chrooted>
+        <filename>04-dracut-minimal.sh</filename>
+        <interpreter>shell</interpreter>
+        <source><![CDATA[
+#!/bin/bash
+# initrd minimale — rimuove moduli inutili su server headless
+
+mkdir -p /etc/dracut.conf.d
+
+cat > /etc/dracut.conf.d/pandora-server.conf << 'EOF'
+# pandora-nuc — server headless, no GUI
+# Moduli omessi:
+#   plymouth  — splash grafico
+#   i18n      — internazionalizzazione
+#   drm       — driver grafico
+#   suse-xfs  — filesystem XFS non utilizzato
+omit_dracutmodules+=" plymouth i18n drm suse-xfs "
+compress="zstd"
+EOF
+
+# rigenera initrd con la nuova configurazione
+dracut --force --kver $(uname -r)
+
+echo "initrd minimale generato: $(ls -lh /boot/initrd-* | awk '{print $5, $9}')"
+        ]]></source>
+      </script>
+
+      <!-- ========================================================
+        SCRIPT 5: configurazione libvirt client
+        Imposta qemu:///system come URI default per virsh.
+        Con l'architettura modulare libvirt il default è
+        qemu:///session (utente) — questa configurazione forza
+        la connessione al demone di sistema.
+        ======================================================== -->
+      <script t="map">
+        <chrooted t="boolean">true</chrooted>
+        <filename>05-libvirt-client.sh</filename>
+        <interpreter>shell</interpreter>
+        <source><![CDATA[
+#!/bin/bash
+# configurazione libvirt client per utente tommy
+
+mkdir -p /home/tommy/.config/libvirt
+cat > /home/tommy/.config/libvirt/libvirt.conf << 'EOF'
+# URI default per virsh — architettura modulare libvirt
+# Senza questa impostazione virsh usa qemu:///session (utente)
+# che non ha accesso al pool storage di sistema
+uri_default = "qemu:///system"
+EOF
+
+chown -R tommy:users /home/tommy/.config
+
+echo "libvirt client configurato per tommy"
+        ]]></source>
+      </script>
+
+      <!-- ========================================================
+        SCRIPT 6: moduli kernel KVM
+        Carica kvm e kvm_intel al boot tramite modules-load.d.
+        Necessario perché senza questo file i moduli non sopravvivono
+        al reboot e libvirt crasha con "Impossibile aprire /dev/kvm".
+        ======================================================== -->
+      <script t="map">
+        <chrooted t="boolean">true</chrooted>
+        <filename>06-kvm-modules.sh</filename>
+        <interpreter>shell</interpreter>
+        <source><![CDATA[
+#!/bin/bash
+# caricamento automatico moduli KVM al boot
+
+cat > /etc/modules-load.d/kvm.conf << 'EOF'
+# Moduli KVM — caricati automaticamente al boot
+# Necessari per libvirt/QEMU con architettura modulare
+kvm
+kvm_intel
+EOF
+
+echo "moduli KVM configurati per caricamento automatico"
+        ]]></source>
+
+      </script>
+      <!-- ========================================================
+        SCRIPT 7: nftables service file
+        Su openSUSE Leap 15.6 il pacchetto nftables-0.9.8 non include
+        il file di servizio systemd — il binario /usr/sbin/nft viene
+        installato ma non esiste nftables.service nell'RPM.
+        Questo script crea il service file manualmente e abilita
+        il servizio, in modo che nftables parta automaticamente
+        al boot e il firewall sia attivo prima della rete.
+        ======================================================== -->
+      <script t="map">
+        <chrooted t="boolean">true</chrooted>
+        <filename>07-nftables-service.sh</filename>
+        <interpreter>shell</interpreter>
+        <source><![CDATA[
+#!/bin/bash
+# creazione service file systemd per nftables
+# necessario su Leap 15.6 — non incluso nel pacchetto nftables-0.9.8
+
+cat > /etc/systemd/system/nftables.service << 'EOF'
+[Unit]
+Description=nftables firewall
+DefaultDependencies=no
+After=network-pre.target
+Before=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.conf
+ExecReload=/usr/sbin/nft -f /etc/nftables.conf
+ExecStop=/usr/sbin/nft flush ruleset
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl enable nftables
+echo "nftables.service creato e abilitato"
+        ]]></source>
+      </script>
+
+    </chroot-scripts>
+
+  </scripts>
+
+</profile>
