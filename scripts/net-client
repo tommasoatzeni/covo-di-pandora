@@ -1,0 +1,151 @@
+#!/bin/bash
+###############################################################################
+# NET-CLIENT - Mobile Lab Router Script
+###############################################################################
+# System: ThinkPad X230 "mucchina" (Manjaro Linux)
+# Purpose: Transform laptop into portable NAT router with DHCP/DNS
+# Author: Tommy (IW5DPW)
+# 
+# Network Configuration:
+#   LAN (lab network):  192.168.1.0/24 via eno1
+#   WAN (internet):     4G modem via enp0s20f0u1
+#   Gateway:            192.168.1.1 (this machine)
+#   DHCP range:         192.168.1.50-150
+#
+# Usage:
+#   ~/bin/net-client
+#
+# To restore normal laptop mode:
+#   sudo systemctl start NetworkManager
+#   sudo reboot  (safest way to restore all networking)
+###############################################################################
+
+set -e  # Exit on any error
+
+###############################################################################
+# CONFIGURATION
+###############################################################################
+
+LAN_IF="eno1"              # LAN interface (Ethernet to lab switch)
+WAN_IF="enp0s20f0u1"       # WAN interface (4G modem USB)
+IP_LAN="192.168.1.1/24"    # Gateway IP for lab network
+
+###############################################################################
+# NETWORK CONFIGURATION
+###############################################################################
+
+echo "[*] Configurazione rete cliente..."
+
+# Configure LAN interface
+echo "[*] Configuro LAN interface: $LAN_IF"
+sudo ip addr flush dev "$LAN_IF"
+sudo ip addr add "$IP_LAN" dev "$LAN_IF"
+sudo ip link set "$LAN_IF" up
+
+# Verify LAN interface is up
+if ! ip addr show "$LAN_IF" | grep -q "192.168.1.1"; then
+    echo "[ERRORE] Failed to configure $LAN_IF"
+    exit 1
+fi
+
+###############################################################################
+# IP FORWARDING
+###############################################################################
+
+echo "[*] Abilito IP forwarding"
+sudo sysctl -w net.ipv4.ip_forward=1 > /dev/null
+
+###############################################################################
+# FIREWALL / NAT CONFIGURATION
+###############################################################################
+
+echo "[*] Pulizia NAT/Firewall"
+sudo iptables -t nat -F
+sudo iptables -F FORWARD
+
+echo "[*] Attivo NAT"
+# Masquerade: all traffic from LAN appears to come from WAN interface
+sudo iptables -t nat -A POSTROUTING -o "$WAN_IF" -j MASQUERADE
+
+# Allow forwarding from LAN to WAN
+sudo iptables -A FORWARD -i "$LAN_IF" -o "$WAN_IF" -j ACCEPT
+
+# Allow established/related connections back from WAN to LAN
+sudo iptables -A FORWARD -i "$WAN_IF" -o "$LAN_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+###############################################################################
+# DHCP SERVER (dnsmasq)
+###############################################################################
+
+echo "[*] Configuro DHCP server"
+
+# Stop NetworkManager to free port 53
+# NetworkManager's internal dnsmasq listens on 127.0.0.1:53
+# and prevents our dnsmasq from starting
+echo "  [*] Stopping NetworkManager and internal dnsmasq..."
+sudo systemctl stop NetworkManager 2>/dev/null || true
+sudo pkill -9 dnsmasq 2>/dev/null || true
+sleep 2
+
+# Verify port 53 is free
+if sudo ss -tulpn | grep -q ':53.*dnsmasq'; then
+    echo "[ERRORE] Port 53 still occupied by dnsmasq!"
+    echo "  [*] Attempting forced cleanup..."
+    sudo pkill -9 dnsmasq
+    sleep 3
+    
+    if sudo ss -tulpn | grep -q ':53.*dnsmasq'; then
+        echo "[ERRORE] Cannot free port 53. Aborting."
+        exit 1
+    fi
+fi
+
+# Start our dnsmasq service
+echo "  [*] Starting dnsmasq service..."
+sudo systemctl start dnsmasq
+
+# Wait for dnsmasq to fully start
+sleep 2
+
+###############################################################################
+# VERIFICATION
+###############################################################################
+
+# Check if dnsmasq started successfully
+if sudo systemctl is-active --quiet dnsmasq; then
+    echo ""
+    echo "╔════════════════════════════════════════════════════════╗"
+    echo "║          ROUTER LABORATORIO ATTIVO                     ║"
+    echo "╚════════════════════════════════════════════════════════╝"
+    echo ""
+    echo "  Gateway:      192.168.1.1"
+    echo "  DHCP range:   192.168.1.50-150"
+    echo "  LAN interface: $LAN_IF"
+    echo "  WAN interface: $WAN_IF"
+    echo ""
+    echo "  DNS upstream:  1.1.1.1, 8.8.8.8"
+    echo "  Local domain:  .lan"
+    echo ""
+    echo "  Monitoraggio:"
+    echo "    - DHCP leases:  cat /var/lib/misc/dnsmasq.leases"
+    echo "    - Logs:         sudo journalctl -fu dnsmasq"
+    echo "    - Network:      sudo ss -tulpn | grep dnsmasq"
+    echo ""
+    echo "  Per ripristinare modalità laptop normale:"
+    echo "    sudo systemctl start NetworkManager"
+    echo "    sudo reboot"
+    echo ""
+else
+    echo ""
+    echo "[ERRORE] dnsmasq non è partito!"
+    echo ""
+    echo "Debug info:"
+    sudo systemctl status dnsmasq --no-pager
+    echo ""
+    sudo journalctl -xeu dnsmasq.service --no-pager -n 20
+    exit 1
+fi
+
+###############################################################################
+# End of script
+###############################################################################
