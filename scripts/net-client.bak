@@ -88,11 +88,8 @@ sudo pkill -9 dnsmasq 2>/dev/null || true
 sleep 2
 
 # Verify port 53 is free
-# Verify port 53 is free or dnsmasq already running correctly
-if sudo systemctl is-active --quiet dnsmasq; then
-    echo "  [*] dnsmasq già attivo e funzionante — OK"
-elif sudo ss -tulpn | grep -q ':53.*dnsmasq'; then
-    echo "[ERRORE] Port 53 occupata da processo dnsmasq orfano!"
+if sudo ss -tulpn | grep -q ':53.*dnsmasq'; then
+    echo "[ERRORE] Port 53 still occupied by dnsmasq!"
     echo "  [*] Attempting forced cleanup..."
     sudo pkill -9 dnsmasq
     sleep 3
