@@ -1,0 +1,19 @@
+<pool type='dir'>
+  <name>vmdata</name>
+  <uuid>879187c8-be7d-4d1b-8f66-558e2deadea0</uuid>
+  <capacity unit='bytes'>3000592982016</capacity>
+  <allocation unit='bytes'>42289733632</allocation>
+  <available unit='bytes'>2958303248384</available>
+  <source>
+  </source>
+  <target>
+    <path>/srv/vmdata</path>
+    <permissions>
+      <mode>0775</mode>
+      <owner>0</owner>
+      <group>1000</group>
+      <label>system_u:object_r:virt_image_t:s0</label>
+    </permissions>
+  </target>
+</pool>
+

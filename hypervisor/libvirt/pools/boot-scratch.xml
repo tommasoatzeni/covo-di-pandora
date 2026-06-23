@@ -1,0 +1,19 @@
+<pool type='dir'>
+  <name>boot-scratch</name>
+  <uuid>4d7eb6fd-6ce9-452d-b31f-b5efeee0f4bb</uuid>
+  <capacity unit='bytes'>2997361836032</capacity>
+  <allocation unit='bytes'>4425048064</allocation>
+  <available unit='bytes'>2992936787968</available>
+  <source>
+  </source>
+  <target>
+    <path>/var/lib/libvirt/boot</path>
+    <permissions>
+      <mode>0711</mode>
+      <owner>0</owner>
+      <group>0</group>
+      <label>system_u:object_r:virt_content_t:s0</label>
+    </permissions>
+  </target>
+</pool>
+
