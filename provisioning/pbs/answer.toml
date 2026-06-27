@@ -1,0 +1,39 @@
+# answer.toml — provisioning AUTOMATICO di Proxmox Backup Server (palestra lab pandora)
+# ============================================================================
+# COS'E': la "ricetta" per installare PBS in modo UNATTENDED (zero click), nello
+# stile AutoYaST ma per Proxmox. Si usa col tool ufficiale:
+#
+#   proxmox-auto-install-assistant prepare-iso \
+#       proxmox-backup-server_4.2-1.iso \
+#       --fetch-from iso --answer-file answer.toml
+#   # -> sforna un ISO "auto-install" che installa da solo seguendo questo file.
+#
+# ⚠️ ESECUZIONE BLOCCATA OFFLINE (2026-06): l'assistant e' un pacchetto Debian/
+#    Proxmox (apt) e il lab di pandora NON ha internet (segmento isolato, cant. #13)
+#    -> qui non si fetcha. Percio' QUESTO FILE e' la RICETTA, pronta per:
+#      (a) l'unattended vero quando il lab avra' uplink (band-aid NAT o backbone DGA);
+#      (b) l'install BARE-METAL di pandora -> MC (cambiando disco/IP).
+#    Per ORA il PBS di prova si installa A MANO via VNC seguendo ESATTAMENTE questi valori.
+# ============================================================================
+
+[global]
+keyboard      = "it"
+country       = "it"
+fqdn          = "pbs.lan"            # dominio lab = .lan (come pandora.lan/proxmox.lan); PBS .21, proxmox .20
+mailto        = "tommy@zenlab.it"    # dove PBS manda gli alert (no internet = non parte, ok)
+timezone      = "Europe/Rome"
+# Password di root: NON si committa in chiaro. Per l'unattended REALE mettere qui
+#   root_password = "..."          (oppure root_password_hashed = "$6$...")
+# e tenere il file fuori da git. Per la palestra via VNC la digiti tu nell'installer.
+root_password = "CHANGEME"
+
+[network]
+source  = "from-answer"
+cidr    = "192.168.1.21/24"          # PBS, accanto al proxmox nested (.20)
+gateway = "192.168.1.1"              # mucchina (NUC) MORTA: irrilevante per il test VM<->VM su br0
+dns     = "1.1.1.1"                  # senza internet non risolve, innocuo
+
+[disk-setup]
+filesystem = "ext4"                  # per la palestra basta ext4 (niente ZFS qui)
+disk_list  = ["vda"]                 # disco SISTEMA 32G (virtio = vda). Il vdb 64G = DATASTORE,
+                                     # NON lo tocca l'installer: lo aggiungiamo a PBS dopo.
