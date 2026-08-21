@@ -1,154 +1,293 @@
 #!/bin/bash
 ###############################################################################
-# NET-CLIENT - Mobile Lab Router Script
+# NET-CLIENT - Mobile Lab Router  (Void Linux / runit edition)
 ###############################################################################
-# System: ThinkPad X230 "mucchina" (Manjaro Linux)
-# Purpose: Transform laptop into portable NAT router with DHCP/DNS
-# Author: Tommy (IW5DPW)
-# 
-# Network Configuration:
-#   LAN (lab network):  192.168.1.0/24 via eno1
-#   WAN (internet):     4G modem via enp0s20f0u1
-#   Gateway:            192.168.1.1 (this machine)
-#   DHCP range:         192.168.1.50-150
+# System:  ThinkPad X230 "pataccone" (Void Linux, runit, NetworkManager)
+# Purpose: Turn the laptop into a portable NAT router that shares the 4G
+#          internet (WAN) with the lab LAN, serving DHCP + DNS via dnsmasq.
+# Author:  Tommy (IW5DPW) — Void port by Claude Code
+#
+# Differences vs the old Manjaro/systemd version:
+#   * No more "kill NetworkManager": on Void port 53 is free (NM has no
+#     internal dnsmasq), so we keep NM running and only hand it back the
+#     LAN interface on teardown. The 4G WAN stays managed by NM the whole
+#     time — we never touch it.
+#   * runit (sv) instead of systemd. We run our OWN dnsmasq instance with a
+#     dedicated config + pidfile, so nothing needs wiring into /var/service.
+#   * up / down / status subcommands (real teardown, not "reboot").
+#   * Idempotent iptables rules (-C before -A, exact -D on teardown) so we
+#     never clobber unrelated firewall rules.
+#   * trap-based rollback: if "up" fails halfway, networking is restored
+#     automatically — you don't get stranded over SSH.
 #
 # Usage:
-#   ~/bin/net-client
-#
-# To restore normal laptop mode:
-#   sudo systemctl start NetworkManager
-#   sudo reboot  (safest way to restore all networking)
+#   net-client up        # become the lab router
+#   net-client down      # restore normal client mode (hand LAN back to NM)
+#   net-client status    # show current state
 ###############################################################################
 
-set -e  # Exit on any error
+set -euo pipefail
 
 ###############################################################################
 # CONFIGURATION
 ###############################################################################
 
-LAN_IF="eno1"              # LAN interface (Ethernet to lab switch)
-WAN_IF="enp0s20f0u1"       # WAN interface (4G modem USB)
-IP_LAN="192.168.1.1/24"    # Gateway IP for lab network
+LAN_IF="enp0s25"                 # LAN interface (Ethernet to lab switch)
+WAN_IF="enp0s20u1"               # WAN interface (4G modem USB, managed by NM)
+LAN_CIDR="192.168.1.1/24"        # Gateway IP/netmask for the lab network
+LAN_GW="192.168.1.1"             # (informational) our gateway IP
+NM_LAN_CON="lan-locale"          # NM connection profile that owns LAN_IF
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# dnsmasq config: prefer an installed copy, fall back to the one next to us
+DNSMASQ_CONF="${NET_CLIENT_CONF:-/etc/net-client/lab.conf}"
+[ -f "$DNSMASQ_CONF" ] || DNSMASQ_CONF="$SCRIPT_DIR/net-client.lab.conf"
+
+PIDFILE="/run/net-client-dnsmasq.pid"
+STATEDIR="/run/net-client"
+FWD_SAVE="$STATEDIR/ip_forward.orig"
 
 ###############################################################################
-# NETWORK CONFIGURATION
+# HELPERS
 ###############################################################################
 
-echo "[*] Configurazione rete cliente..."
+c_ok()   { printf '  \033[32m[ok]\033[0m   %s\n' "$*"; }
+c_info() { printf '  \033[36m[*]\033[0m   %s\n' "$*"; }
+c_warn() { printf '  \033[33m[!]\033[0m   %s\n' "$*"; }
+c_err()  { printf '  \033[31m[ERR]\033[0m %s\n' "$*" >&2; }
 
-# Configure LAN interface
-echo "[*] Configuro LAN interface: $LAN_IF"
-sudo ip addr flush dev "$LAN_IF"
-sudo ip addr add "$IP_LAN" dev "$LAN_IF"
-sudo ip link set "$LAN_IF" up
-
-# Verify LAN interface is up
-if ! ip addr show "$LAN_IF" | grep -q "192.168.1.1"; then
-    echo "[ERRORE] Failed to configure $LAN_IF"
-    exit 1
-fi
-
-###############################################################################
-# IP FORWARDING
-###############################################################################
-
-echo "[*] Abilito IP forwarding"
-sudo sysctl -w net.ipv4.ip_forward=1 > /dev/null
-
-###############################################################################
-# FIREWALL / NAT CONFIGURATION
-###############################################################################
-
-echo "[*] Pulizia NAT/Firewall"
-sudo iptables -t nat -F
-sudo iptables -F FORWARD
-
-echo "[*] Attivo NAT"
-# Masquerade: all traffic from LAN appears to come from WAN interface
-sudo iptables -t nat -A POSTROUTING -o "$WAN_IF" -j MASQUERADE
-
-# Allow forwarding from LAN to WAN
-sudo iptables -A FORWARD -i "$LAN_IF" -o "$WAN_IF" -j ACCEPT
-
-# Allow established/related connections back from WAN to LAN
-sudo iptables -A FORWARD -i "$WAN_IF" -o "$LAN_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT
-
-###############################################################################
-# DHCP SERVER (dnsmasq)
-###############################################################################
-
-echo "[*] Configuro DHCP server"
-
-# Stop NetworkManager to free port 53
-# NetworkManager's internal dnsmasq listens on 127.0.0.1:53
-# and prevents our dnsmasq from starting
-echo "  [*] Stopping NetworkManager and internal dnsmasq..."
-sudo systemctl stop NetworkManager 2>/dev/null || true
-sudo pkill -9 dnsmasq 2>/dev/null || true
-sleep 2
-
-# Verify port 53 is free
-# Verify port 53 is free or dnsmasq already running correctly
-if sudo systemctl is-active --quiet dnsmasq; then
-    echo "  [*] dnsmasq già attivo e funzionante — OK"
-elif sudo ss -tulpn | grep -q ':53.*dnsmasq'; then
-    echo "[ERRORE] Port 53 occupata da processo dnsmasq orfano!"
-    echo "  [*] Attempting forced cleanup..."
-    sudo pkill -9 dnsmasq
-    sleep 3
-    
-    if sudo ss -tulpn | grep -q ':53.*dnsmasq'; then
-        echo "[ERRORE] Cannot free port 53. Aborting."
-        exit 1
+need_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        exec sudo -E "$0" "$@"
     fi
-fi
+}
 
-# Start our dnsmasq service
-echo "  [*] Starting dnsmasq service..."
-sudo systemctl start dnsmasq
-
-# Wait for dnsmasq to fully start
-sleep 2
-
-###############################################################################
-# VERIFICATION
-###############################################################################
-
-# Check if dnsmasq started successfully
-if sudo systemctl is-active --quiet dnsmasq; then
-    echo ""
-    echo "╔════════════════════════════════════════════════════════╗"
-    echo "║          ROUTER LABORATORIO ATTIVO                     ║"
-    echo "╚════════════════════════════════════════════════════════╝"
-    echo ""
-    echo "  Gateway:      192.168.1.1"
-    echo "  DHCP range:   192.168.1.50-150"
-    echo "  LAN interface: $LAN_IF"
-    echo "  WAN interface: $WAN_IF"
-    echo ""
-    echo "  DNS upstream:  1.1.1.1, 8.8.8.8"
-    echo "  Local domain:  .lan"
-    echo ""
-    echo "  Monitoraggio:"
-    echo "    - DHCP leases:  cat /var/lib/misc/dnsmasq.leases"
-    echo "    - Logs:         sudo journalctl -fu dnsmasq"
-    echo "    - Network:      sudo ss -tulpn | grep dnsmasq"
-    echo ""
-    echo "  Per ripristinare modalità laptop normale:"
-    echo "    sudo systemctl start NetworkManager"
-    echo "    sudo reboot"
-    echo ""
-else
-    echo ""
-    echo "[ERRORE] dnsmasq non è partito!"
-    echo ""
-    echo "Debug info:"
-    sudo systemctl status dnsmasq --no-pager
-    echo ""
-    sudo journalctl -xeu dnsmasq.service --no-pager -n 20
-    exit 1
-fi
+ipt_add() {   # ipt_add <table-args...> : uses -C to check, -A to add
+    local check=("${@/-A/-C}")
+    iptables "${check[@]}" 2>/dev/null || iptables "$@"
+}
+ipt_del() {   # ipt_del <table-args...> : delete if present, ignore if absent
+    local del=("${@/-A/-D}")
+    iptables "${del[@]}" 2>/dev/null || true
+}
 
 ###############################################################################
-# End of script
+# PREFLIGHT
 ###############################################################################
+
+preflight() {
+    local fail=0
+
+    command -v dnsmasq >/dev/null 2>&1 || {
+        c_err "dnsmasq non installato.  Esegui:  sudo xbps-install -S dnsmasq"
+        fail=1
+    }
+    [ -f "$DNSMASQ_CONF" ] || {
+        c_err "config dnsmasq non trovata: $DNSMASQ_CONF"
+        fail=1
+    }
+    ip link show "$LAN_IF" >/dev/null 2>&1 || {
+        c_err "interfaccia LAN '$LAN_IF' inesistente"
+        fail=1
+    }
+    ip link show "$WAN_IF" >/dev/null 2>&1 || {
+        c_err "interfaccia WAN '$WAN_IF' inesistente"
+        fail=1
+    }
+    # WAN must actually carry internet (default route through it)
+    if ! ip route show default 2>/dev/null | grep -q "dev $WAN_IF"; then
+        c_warn "la rotta di default NON passa da $WAN_IF: il NAT non avrà"
+        c_warn "internet a monte. Verifica che il 4G sia su (nmcli device status)."
+    fi
+
+    return $fail
+}
+
+###############################################################################
+# ROLLBACK (trap on error during 'up')
+###############################################################################
+
+UP_STARTED=0
+on_error() {
+    local rc=$?
+    if [ "$UP_STARTED" -eq 1 ]; then
+        echo
+        c_err "errore durante l'avvio (rc=$rc) — eseguo rollback automatico"
+        do_down quiet || true
+    fi
+    exit "$rc"
+}
+
+###############################################################################
+# UP — become the lab router
+###############################################################################
+
+do_up() {
+    preflight || { c_err "preflight fallito, abort."; exit 1; }
+
+    trap on_error ERR
+    UP_STARTED=1
+    mkdir -p "$STATEDIR"
+
+    echo
+    c_info "Modalità ROUTER LAB — attivazione"
+
+    # 1) Take the LAN interface away from NetworkManager (WAN/4G untouched)
+    c_info "Rilascio $LAN_IF da NetworkManager"
+    nmcli device disconnect "$LAN_IF" >/dev/null 2>&1 || true
+
+    # 2) Static gateway IP on the LAN
+    c_info "Configuro $LAN_IF = $LAN_CIDR"
+    ip addr flush dev "$LAN_IF"
+    ip addr add "$LAN_CIDR" dev "$LAN_IF"
+    ip link set "$LAN_IF" up
+    ip addr show "$LAN_IF" | grep -q "${LAN_GW}/" \
+        || { c_err "IP non assegnato a $LAN_IF"; return 1; }
+    c_ok "$LAN_IF su come gateway $LAN_GW"
+
+    # 3) IP forwarding (save previous value for clean restore)
+    sysctl -n net.ipv4.ip_forward > "$FWD_SAVE"
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null
+    c_ok "IP forwarding abilitato"
+
+    # 4) NAT + forwarding rules (idempotent)
+    c_info "Configuro NAT (MASQUERADE su $WAN_IF)"
+    ipt_add -t nat -A POSTROUTING -o "$WAN_IF" -j MASQUERADE
+    ipt_add -A FORWARD -i "$LAN_IF" -o "$WAN_IF" -j ACCEPT
+    ipt_add -A FORWARD -i "$WAN_IF" -o "$LAN_IF" \
+            -m state --state RELATED,ESTABLISHED -j ACCEPT
+    c_ok "NAT attivo"
+
+    # 5) Our own dnsmasq instance (DHCP + DNS) bound to the LAN
+    c_info "Avvio dnsmasq (conf: $DNSMASQ_CONF)"
+    rm -f "$PIDFILE"
+    dnsmasq --conf-file="$DNSMASQ_CONF" \
+            --pid-file="$PIDFILE" \
+            --interface="$LAN_IF" \
+            --except-interface=lo --bind-interfaces
+    sleep 1
+    [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null \
+        || { c_err "dnsmasq non è partito"; return 1; }
+    c_ok "dnsmasq attivo (pid $(cat "$PIDFILE"))"
+
+    UP_STARTED=0
+    trap - ERR
+    print_banner
+}
+
+###############################################################################
+# DOWN — restore normal client mode
+###############################################################################
+
+do_down() {
+    local quiet="${1:-}"
+    [ "$quiet" = quiet ] || { echo; c_info "Modalità ROUTER LAB — disattivazione"; }
+
+    # 1) Stop our dnsmasq
+    if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        kill "$(cat "$PIDFILE")" 2>/dev/null || true
+        [ "$quiet" = quiet ] || c_ok "dnsmasq fermato"
+    fi
+    rm -f "$PIDFILE"
+
+    # 2) Remove our iptables rules (exact match, nothing else touched)
+    ipt_del -t nat -A POSTROUTING -o "$WAN_IF" -j MASQUERADE
+    ipt_del -A FORWARD -i "$LAN_IF" -o "$WAN_IF" -j ACCEPT
+    ipt_del -A FORWARD -i "$WAN_IF" -o "$LAN_IF" \
+            -m state --state RELATED,ESTABLISHED -j ACCEPT
+    [ "$quiet" = quiet ] || c_ok "regole NAT rimosse"
+
+    # 3) Restore ip_forward to its previous value
+    if [ -f "$FWD_SAVE" ]; then
+        sysctl -w net.ipv4.ip_forward="$(cat "$FWD_SAVE")" >/dev/null || true
+        rm -f "$FWD_SAVE"
+    fi
+
+    # 4) Flush LAN IP and hand the interface back to NetworkManager
+    ip addr flush dev "$LAN_IF" 2>/dev/null || true
+    nmcli device connect "$LAN_IF" >/dev/null 2>&1 || true
+    [ "$quiet" = quiet ] || c_ok "$LAN_IF restituita a NetworkManager ($NM_LAN_CON)"
+
+    [ "$quiet" = quiet ] || { echo; c_ok "Modalità client ripristinata."; echo; }
+}
+
+###############################################################################
+# STATUS
+###############################################################################
+
+do_status() {
+    echo
+    echo "  net-client — stato"
+    echo "  ------------------"
+    local running=0
+    if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        running=1
+    fi
+    if [ "$running" -eq 1 ]; then
+        echo "  Modalità:      ROUTER LAB ATTIVO (dnsmasq pid $(cat "$PIDFILE"))"
+    else
+        echo "  Modalità:      client (router non attivo)"
+    fi
+    echo "  LAN ($LAN_IF):  $(ip -4 addr show "$LAN_IF" 2>/dev/null | awk '/inet /{print $2}' | paste -sd' ' -)"
+    echo "  WAN ($WAN_IF):  $(ip -4 addr show "$WAN_IF" 2>/dev/null | awk '/inet /{print $2}' | paste -sd' ' -)"
+    echo "  Default route: $(ip route show default 2>/dev/null | paste -sd' | ' -)"
+    echo "  ip_forward:    $(sysctl -n net.ipv4.ip_forward 2>/dev/null)"
+    echo "  NAT rule:      $(iptables -t nat -C POSTROUTING -o "$WAN_IF" -j MASQUERADE 2>/dev/null && echo presente || echo assente)"
+    if [ "$running" -eq 1 ] && [ -f /var/lib/misc/dnsmasq.leases ]; then
+        echo "  DHCP leases:"
+        sed 's/^/      /' /var/lib/misc/dnsmasq.leases 2>/dev/null || true
+    fi
+    echo
+}
+
+###############################################################################
+# BANNER
+###############################################################################
+
+print_banner() {
+    cat <<EOF
+
+  ╔════════════════════════════════════════════════════════╗
+  ║              ROUTER LABORATORIO ATTIVO                  ║
+  ╚════════════════════════════════════════════════════════╝
+
+    Gateway:        $LAN_GW   (questo X230, $LAN_IF)
+    WAN (internet): $WAN_IF   (4G, gestito da NetworkManager)
+    DHCP/DNS:       dnsmasq — vedi $DNSMASQ_CONF
+    Dominio locale: .lan
+
+    Monitoraggio:
+      net-client status
+      DHCP leases:  cat /var/lib/misc/dnsmasq.leases
+      dnsmasq log:  sudo tail -f /var/log/dnsmasq.log  (se abilitato)
+
+    Per tornare in modalità client:
+      net-client down
+
+EOF
+}
+
+###############################################################################
+# DISPATCH
+###############################################################################
+
+usage() {
+    cat <<EOF
+net-client — router NAT da campo per il lab (Void Linux / X230)
+
+Uso:
+  net-client up        attiva la modalità router (NAT + DHCP/DNS)
+  net-client down      ripristina la modalità client
+  net-client status    mostra lo stato attuale
+
+LAN: $LAN_IF ($LAN_GW)   WAN: $WAN_IF (4G via NetworkManager)
+EOF
+}
+
+case "${1:-}" in
+    up)      need_root "$@"; do_up ;;
+    down)    need_root "$@"; do_down ;;
+    status)  do_status ;;
+    ""|-h|--help|help) usage ;;
+    *)       c_err "comando sconosciuto: $1"; echo; usage; exit 1 ;;
+esac
